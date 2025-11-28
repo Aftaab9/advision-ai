@@ -1,15 +1,47 @@
-from fastapi import FastAPI
-from .schemas import EngagementRequest, EngagementResponse
+
+from typing import List
+from fastapi.middleware.cors import CORSMiddleware
+
+from fastapi import FastAPI, Depends
+from .schemas import (
+    EngagementRequest,
+    EngagementResponse,
+    CampaignCreate,
+    CampaignOut,
+)
 import joblib
 import pathlib
-import pandas as pd   # ⬅ add this
+import pandas as pd
 
+from sqlalchemy.orm import Session
+from .database import SessionLocal, engine, Base
+from . import models
 
+# Create tables (only runs if they don't exist)
+Base.metadata.create_all(bind=engine)
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 app = FastAPI(
     title="AdVision AI Backend",
     description="API for marketing engagement predictions",
     version="0.1.0",
+)
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Load model at startup
@@ -23,10 +55,6 @@ def health():
 
 @app.post("/predict-engagement", response_model=EngagementResponse)
 def predict_engagement(payload: EngagementRequest):
-    """
-    Predict engagement rate using baseline RandomForest model.
-    """
-
     data = {
         "platform": payload.platform,
         "country": payload.country,
@@ -38,38 +66,81 @@ def predict_engagement(payload: EngagementRequest):
         "reach": payload.reach,
     }
 
-    # Create a single-row DataFrame with the same columns as during training
-    X = pd.DataFrame([data])
+    x_df = pd.DataFrame([data])
+    pred = model.predict(x_df)[0]
 
-    pred = model.predict(X)[0]
+
 
     return EngagementResponse(
-        engagement_rate=float(pred),
-        model_version="baseline_v1",
+    engagement_rate=float(pred),
+    model_version_str="baseline_v1",
+)
+
+
+
+@app.post(
+    "/campaigns/create-with-prediction",
+    response_model=CampaignOut,
+    summary="Create a campaign, predict engagement, and store in DB",
+)
+def create_campaign_with_prediction(
+    payload: CampaignCreate,
+    db: Session = Depends(get_db),
+):
+    # Build data for the ML model
+    data = {
+        "platform": payload.platform,
+        "country": payload.country,
+        "product_category": payload.product_category,
+        "spend": payload.spend,
+        "impressions": payload.impressions,
+        "clicks": payload.clicks,
+        "conversions": payload.conversions,
+        "reach": payload.reach,
+    }
+
+    x_df = pd.DataFrame([data])
+    pred = model.predict(x_df)[0]
+
+    pred_float = float(pred)
+
+    # Create ORM object
+    campaign = models.Campaign(
+        platform=payload.platform,
+        country=payload.country,
+        product_category=payload.product_category,
+        spend=payload.spend,
+        impressions=payload.impressions,
+        clicks=payload.clicks,
+        conversions=payload.conversions,
+        reach=payload.reach,
+        predicted_engagement_rate=pred_float,
     )
 
+    db.add(campaign)
+    db.commit()
+    db.refresh(campaign)
 
-# @app.post("/predict-engagement", response_model=EngagementResponse)
-# def predict_engagement(payload: EngagementRequest):
-#     """
-#     Predict engagement rate using baseline RandomForest model.
-#     """
+    return CampaignOut(
+        id=campaign.id,
+        platform=campaign.platform,
+        country=campaign.country,
+        product_category=campaign.product_category,
+        spend=campaign.spend,
+        impressions=campaign.impressions,
+        clicks=campaign.clicks,
+        conversions=campaign.conversions,
+        reach=campaign.reach,
+        predicted_engagement_rate=campaign.predicted_engagement_rate,
+    )
 
-#     # Build input in the same order as training features
-#     X = [{
-#         "platform": payload.platform,
-#         "country": payload.country,
-#         "product_category": payload.product_category,
-#         "spend": payload.spend,
-#         "impressions": payload.impressions,
-#         "clicks": payload.clicks,
-#         "conversions": payload.conversions,
-#         "reach": payload.reach,
-#     }]
+@app.get("/campaigns", response_model=List[CampaignOut])
+def list_campaigns(db: Session = Depends(get_db)):
+    campaigns = (
+        db.query(models.Campaign)
+        .order_by(models.Campaign.created_at.desc())
+        .limit(100)
+        .all()
+    )
+    return campaigns
 
-#     pred = model.predict(X)[0]
-
-#     return EngagementResponse(
-#         engagement_rate=float(pred),
-#         model_version="baseline_v1",
-#     )
