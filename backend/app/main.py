@@ -2,6 +2,9 @@
 from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 
+from fastapi import Depends
+
+
 from fastapi import FastAPI, Depends
 from .schemas import (
     EngagementRequest,
@@ -17,6 +20,7 @@ from sqlalchemy.orm import Session
 from .database import SessionLocal, engine, Base
 from . import models
 
+from .models import Campaign
 # Create tables (only runs if they don't exist)
 Base.metadata.create_all(bind=engine)
 def get_db():
@@ -144,3 +148,54 @@ def list_campaigns(db: Session = Depends(get_db)):
     )
     return campaigns
 
+
+
+# ... keep your existing code above (models, get_db, etc.) ...
+
+@app.get("/stats/summary")
+def get_stats(db: Session = Depends(get_db)):
+    campaigns = db.query(Campaign).all()
+
+    if not campaigns:
+        return {
+            "total_campaigns": 0,
+            "total_spend": 0.0,
+            "avg_ctr": 0.0,
+            "platform_engagement": {},
+        }
+
+    total_spend = 0.0
+    total_impressions = 0
+    total_clicks = 0
+
+    platform_engagement = {}
+
+    for c in campaigns:
+        # Be defensive: treat None as 0
+        spend = float(c.spend or 0)
+        impr = int(c.impressions or 0)
+        clicks = int(c.clicks or 0)
+        er = float(c.predicted_engagement_rate or 0.0)
+
+        total_spend += spend
+        total_impressions += impr
+        total_clicks += clicks
+
+        plat = c.platform or "unknown"
+        platform_engagement.setdefault(plat, []).append(er)
+
+    avg_ctr = (total_clicks / total_impressions) if total_impressions else 0.0
+
+    # Average engagement per platform
+    for plat, vals in platform_engagement.items():
+        if vals:
+            platform_engagement[plat] = sum(vals) / len(vals)
+        else:
+            platform_engagement[plat] = 0.0
+
+    return {
+        "total_campaigns": len(campaigns),
+        "total_spend": float(total_spend),
+        "avg_ctr": float(avg_ctr),
+        "platform_engagement": platform_engagement,
+    }
