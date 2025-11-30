@@ -1,28 +1,28 @@
-
 from typing import List
-from fastapi.middleware.cors import CORSMiddleware
-
-from fastapi import Depends
-
 
 from fastapi import FastAPI, Depends
+from fastapi.middleware.cors import CORSMiddleware
+
+import joblib
+import pathlib
+import pandas as pd
+
+from sqlalchemy.orm import Session
+
 from .schemas import (
     EngagementRequest,
     EngagementResponse,
     CampaignCreate,
     CampaignOut,
 )
-import joblib
-import pathlib
-import pandas as pd
-
-from sqlalchemy.orm import Session
 from .database import SessionLocal, engine, Base
 from . import models
-
 from .models import Campaign
+
 # Create tables (only runs if they don't exist)
 Base.metadata.create_all(bind=engine)
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -30,15 +30,16 @@ def get_db():
     finally:
         db.close()
 
+
 app = FastAPI(
     title="AdVision AI Backend",
     description="API for marketing engagement predictions",
     version="0.1.0",
 )
-origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
+
+# ---- CORS: allow all origins for now (including Vercel) ----
+# If you want to be stricter later, replace ["*"] with a list of allowed URLs.
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,6 +58,7 @@ model = joblib.load(MODEL_PATH)
 def health():
     return {"status": "ok", "message": "AdVision AI backend is running"}
 
+
 @app.post("/predict-engagement", response_model=EngagementResponse)
 def predict_engagement(payload: EngagementRequest):
     data = {
@@ -73,13 +75,10 @@ def predict_engagement(payload: EngagementRequest):
     x_df = pd.DataFrame([data])
     pred = model.predict(x_df)[0]
 
-
-
     return EngagementResponse(
-    engagement_rate=float(pred),
-    model_version_str="baseline_v1",
-)
-
+        engagement_rate=float(pred),
+        model_version_str="baseline_v1",
+    )
 
 
 @app.post(
@@ -91,7 +90,6 @@ def create_campaign_with_prediction(
     payload: CampaignCreate,
     db: Session = Depends(get_db),
 ):
-    # Build data for the ML model
     data = {
         "platform": payload.platform,
         "country": payload.country,
@@ -105,10 +103,8 @@ def create_campaign_with_prediction(
 
     x_df = pd.DataFrame([data])
     pred = model.predict(x_df)[0]
-
     pred_float = float(pred)
 
-    # Create ORM object
     campaign = models.Campaign(
         platform=payload.platform,
         country=payload.country,
@@ -138,6 +134,7 @@ def create_campaign_with_prediction(
         predicted_engagement_rate=campaign.predicted_engagement_rate,
     )
 
+
 @app.get("/campaigns", response_model=List[CampaignOut])
 def list_campaigns(db: Session = Depends(get_db)):
     campaigns = (
@@ -148,9 +145,6 @@ def list_campaigns(db: Session = Depends(get_db)):
     )
     return campaigns
 
-
-
-# ... keep your existing code above (models, get_db, etc.) ...
 
 @app.get("/stats/summary")
 def get_stats(db: Session = Depends(get_db)):
@@ -171,7 +165,6 @@ def get_stats(db: Session = Depends(get_db)):
     platform_engagement = {}
 
     for c in campaigns:
-        # Be defensive: treat None as 0
         spend = float(c.spend or 0)
         impr = int(c.impressions or 0)
         clicks = int(c.clicks or 0)
@@ -186,12 +179,8 @@ def get_stats(db: Session = Depends(get_db)):
 
     avg_ctr = (total_clicks / total_impressions) if total_impressions else 0.0
 
-    # Average engagement per platform
     for plat, vals in platform_engagement.items():
-        if vals:
-            platform_engagement[plat] = sum(vals) / len(vals)
-        else:
-            platform_engagement[plat] = 0.0
+        platform_engagement[plat] = sum(vals) / len(vals) if vals else 0.0
 
     return {
         "total_campaigns": len(campaigns),
